@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/sync-metrics",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/optimize-creatives",
+      "schedule": "0 */12 * * *"
+    },
+    {
+      "path": "/api/cron/budget-guard",
+      "schedule": "0 * * * *"
+    }
+  ]
+}

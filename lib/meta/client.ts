@@ -258,12 +258,11 @@ export async function metaGetAll<T>(
   maxPages = 10,
 ): Promise<T[]> {
   const results: T[] = [];
-  let nextPath: string | null = path;
   let nextParams = { ...params };
   let pages = 0;
 
-  while (nextPath && pages < maxPages) {
-    const page = await metaGet<MetaListResponse<T>>(nextPath, nextParams);
+  while (pages < maxPages) {
+    const page = await metaGet<MetaListResponse<T>>(path, nextParams);
     results.push(...page.data);
 
     const nextUrl = page.paging?.next;
@@ -274,6 +273,7 @@ export async function metaGetAll<T>(
       const parsedUrl = new URL(nextUrl);
       const after = parsedUrl.searchParams.get('after');
       if (!after) break;
+
       nextParams = { ...params, after };
     } catch {
       break;

@@ -102,7 +102,7 @@ export function reconcileToTotal(
 ): number[] {
   if (budgets.length === 0) return [];
 
-  let result = budgets.map((b) => clamp(b, min, max));
+  const result = budgets.map((b) => clamp(b, min, max));
   const diff = round(target - result.reduce((s, v) => s + v, 0), 4);
 
   if (Math.abs(diff) < 0.01) return result.map((v) => round(v, 2));

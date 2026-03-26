@@ -2,26 +2,11 @@
  * lib/budget/safety.ts
  *
  * Budget Safety Engine.
- *
- * This module is the guardian of the campaign's total budget.  It evaluates
- * the current pacing state and, when necessary, takes protective actions:
- *
- * 1. NONE          – Everything is fine; no action needed.
- * 2. REDUCE_BUDGETS – Over-pacing; reduce per-ad daily budgets proportionally.
- * 3. FREEZE_OPTIMIZER – Danger pacing; prevent the optimizer from making any
- *                       changes until pacing recovers.
- * 4. PAUSE_ALL_ADS  – Budget exhausted or campaign ended; pause all delivery.
- *
- * This module coordinates with:
- *   - lib/budget/pacing.ts   (classify pacing state)
- *   - lib/budget/limits.ts   (apply and validate new allocations)
- *   - lib/meta/budgets.ts    (write budget changes to the Meta API)
- *   - lib/db/queries.ts      (persist guard run to DB)
  */
 
 import type { AdBudgetAllocation } from '../../types/campaign';
 import type { BudgetGuardResult, PacingStatus, SafetyAction } from '../../types/optimizer';
-import { computePacingStatus, isDangerPacing, isOnPace } from './pacing';
+import { computePacingStatus, isDangerPacing } from './pacing';
 import { scaleAllAllocations, maxSafeDailySpend } from './limits';
 import { batchUpdateAdSetBudgets, usdToCents } from '../meta/budgets';
 import { createBudgetGuardRun, getTotalSpendCents } from '../db/queries';
@@ -54,29 +39,21 @@ export interface BudgetGuardInput {
   now?: Date;
 }
 
-// ─── Pause helpers ────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Pause all ads by setting their budgets to the minimum allowed value.
- * This is a Meta-safe way to effectively stop spend without deleting ad sets.
- *
- * In a real production system you might also call the Meta API to set the
- * ad set status to PAUSED.  For now we reduce budgets to the floor, which
- * stops competitive delivery without requiring an extra API call.
- */
 async function applyPauseAllocation(
   allocations: AdBudgetAllocation[],
 ): Promise<void> {
   if (allocations.length === 0) return;
 
-  // Set all to minimum (but > 0 so Meta doesn't reject the update).
   const updates = allocations.map((a) => ({
     adSetId: a.adSetId,
-    cents: usdToCents(1), // $1 minimum — stops meaningful delivery
+    cents: usdToCents(1),
   }));
 
   const results = await batchUpdateAdSetBudgets(updates);
   const failures = Array.from(results.entries()).filter(([, ok]) => !ok);
+
   if (failures.length > 0) {
     await logger.warn('Some ad set pause updates failed', {
       failedAdSets: failures.map(([id]) => id),
@@ -84,9 +61,6 @@ async function applyPauseAllocation(
   }
 }
 
-/**
- * Apply reduced budgets to the Meta API.
- */
 async function applyReducedAllocations(
   allocations: AdBudgetAllocation[],
 ): Promise<void> {
@@ -99,6 +73,7 @@ async function applyReducedAllocations(
 
   const results = await batchUpdateAdSetBudgets(updates);
   const failures = Array.from(results.entries()).filter(([, ok]) => !ok);
+
   if (failures.length > 0) {
     await logger.warn('Some budget reduction updates failed', {
       failedAdSets: failures.map(([id]) => id),
@@ -106,17 +81,6 @@ async function applyReducedAllocations(
   }
 }
 
-// ─── Budget reduction helper ──────────────────────────────────────────────────
-
-/**
- * Reduce all ad budgets by `reductionFraction`, capped by the safe daily
- * spend derived from the remaining budget.
- *
- * Extracted so both FREEZE_OPTIMIZER and REDUCE_BUDGETS cases can call it
- * explicitly without fall-through logic.
- *
- * @returns The updated allocations and a human-readable note suffix.
- */
 async function applyBudgetReduction(
   currentAllocations: AdBudgetAllocation[],
   campaignId: string,
@@ -124,10 +88,9 @@ async function applyBudgetReduction(
   daysRemaining: number,
   reductionFraction: number,
   action: SafetyAction,
-): Promise<{ allocations: AdBudgetAllocation[]; noteSuffix: string }> {
+): Promise<{ noteSuffix: string }> {
   const scaleFactor = 1 - reductionFraction;
 
-  // Also consider the max safe daily spend given remaining budget.
   const safeDaily = maxSafeDailySpend(
     totalSpentUsd,
     daysRemaining,
@@ -138,7 +101,9 @@ async function applyBudgetReduction(
     (s, a) => s + a.dailyBudgetUsd,
     0,
   );
+
   const scaledTotal = round(currentTotal * scaleFactor, 2);
+
   const targetTotal = Math.min(
     scaledTotal,
     safeDaily > 0 ? safeDaily : BASE_DAILY_BUDGET,
@@ -151,7 +116,10 @@ async function applyBudgetReduction(
 
   await applyReducedAllocations(allocations);
 
-  const newTotal = round(allocations.reduce((s, a) => s + a.dailyBudgetUsd, 0), 2);
+  const newTotal = round(
+    allocations.reduce((s, a) => s + a.dailyBudgetUsd, 0),
+    2
+  );
 
   await logger.warn('Budget guard reduced ad spend', {
     campaignId,
@@ -161,38 +129,25 @@ async function applyBudgetReduction(
     newTotal,
   });
 
-  const noteSuffix =
-    ` Budgets reduced by ${Math.round(reductionFraction * 100)}%.` +
-    ` New total: $${newTotal}.`;
-
-  return { allocations, noteSuffix };
+  return {
+    noteSuffix:
+      ` Budgets reduced by ${Math.round(reductionFraction * 100)}%.` +
+      ` New total: $${newTotal}.`,
+  };
 }
 
-// ─── Decision logic ───────────────────────────────────────────────────────────
+// ─── Decision ─────────────────────────────────────────────────────────────────
 
-/**
- * Decide what safety action to take based on pacing status.
- *
- * Priority order:
- * 1. Budget exhausted → PAUSE (highest priority)
- * 2. Campaign ended   → PAUSE (if configured)
- * 3. DANGER pacing    → FREEZE_OPTIMIZER + REDUCE_BUDGETS
- * 4. OVER_PACING      → REDUCE_BUDGETS
- * 5. Otherwise        → NONE
- */
 export function decideSafetyAction(
   pacingStatus: PacingStatus,
   campaignStartDate: Date,
   now: Date = new Date(),
-  totalBudget: number = TOTAL_CAMPAIGN_BUDGET,
   durationDays: number = CAMPAIGN_DURATION_DAYS,
 ): SafetyAction {
-  // Budget fully consumed.
   if (pacingStatus.remainingBudgetUsd <= 0 && AUTO_PAUSE_IF_BUDGET_REACHED) {
     return 'PAUSE_ALL_ADS';
   }
 
-  // Campaign end date reached.
   if (
     AUTO_PAUSE_IF_CAMPAIGN_END_REACHED &&
     isCampaignOver(campaignStartDate, now, durationDays)
@@ -200,12 +155,10 @@ export function decideSafetyAction(
     return 'PAUSE_ALL_ADS';
   }
 
-  // Danger — critically over-paced.
   if (isDangerPacing(pacingStatus)) {
-    return 'FREEZE_OPTIMIZER'; // caller will also reduce budgets
+    return 'FREEZE_OPTIMIZER';
   }
 
-  // Over-pacing — reduce budgets conservatively.
   if (pacingStatus.state === 'OVER_PACING') {
     return 'REDUCE_BUDGETS';
   }
@@ -213,29 +166,16 @@ export function decideSafetyAction(
   return 'NONE';
 }
 
-// ─── Main safety engine entry point ──────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
-/**
- * Run the budget safety engine for the given campaign.
- *
- * Steps:
- * 1. Load total spend from the DB.
- * 2. Compute pacing status.
- * 3. Decide action.
- * 4. Execute the action (may call Meta API).
- * 5. Persist the guard run to the DB.
- * 6. Return the result (for logging / cron route response).
- */
 export async function runBudgetGuard(
   input: BudgetGuardInput,
 ): Promise<BudgetGuardResult> {
   const now = input.now ?? new Date();
 
-  // ── 1. Load actual spend ───────────────────────────────────────────────────
   const totalSpendCents = await getTotalSpendCents(input.campaignDbId);
   const totalSpentUsd = centsToUsd(totalSpendCents);
 
-  // ── 2. Compute pacing status ───────────────────────────────────────────────
   const pacingStatus = computePacingStatus(
     totalSpentUsd,
     input.campaignStartDate,
@@ -254,7 +194,6 @@ export async function runBudgetGuard(
     daysRemaining: pacingStatus.daysRemaining,
   });
 
-  // ── 3. Decide action ───────────────────────────────────────────────────────
   const action = decideSafetyAction(
     pacingStatus,
     input.campaignStartDate,
@@ -262,65 +201,47 @@ export async function runBudgetGuard(
   );
 
   let notes = `Pacing state: ${pacingStatus.state}. Action: ${action}.`;
-  let finalAllocations = input.currentAllocations;
 
-  // ── 4. Execute action ──────────────────────────────────────────────────────
   switch (action) {
     case 'PAUSE_ALL_ADS': {
-      await logger.warn('Pausing all ads — budget exhausted or campaign ended', {
-        campaignId: input.campaignId,
-        totalSpentUsd,
-        remainingBudgetUsd: pacingStatus.remainingBudgetUsd,
-        daysRemaining: pacingStatus.daysRemaining,
-      });
+      await logger.warn('Pausing all ads', { campaignId: input.campaignId });
       await applyPauseAllocation(input.currentAllocations);
-      notes += ' All ad budgets set to minimum to stop delivery.';
+      notes += ' All ads paused.';
       break;
     }
 
     case 'FREEZE_OPTIMIZER': {
-      // Danger state: freeze the optimizer AND reduce budgets aggressively.
-      const { allocations: dangerAllocations, noteSuffix: dangerNote } =
-        await applyBudgetReduction(
-          input.currentAllocations,
-          input.campaignId,
-          totalSpentUsd,
-          pacingStatus.daysRemaining,
-          BUDGET_GUARD_DANGER_REDUCTION_FRACTION,
-          action,
-        );
-      finalAllocations = dangerAllocations;
-      notes += dangerNote;
+      const { noteSuffix } = await applyBudgetReduction(
+        input.currentAllocations,
+        input.campaignId,
+        totalSpentUsd,
+        pacingStatus.daysRemaining,
+        BUDGET_GUARD_DANGER_REDUCTION_FRACTION,
+        action,
+      );
+      notes += noteSuffix;
       break;
     }
 
     case 'REDUCE_BUDGETS': {
-      // Over-pacing: reduce budgets conservatively.
-      const { allocations: reducedAllocations, noteSuffix: reduceNote } =
-        await applyBudgetReduction(
-          input.currentAllocations,
-          input.campaignId,
-          totalSpentUsd,
-          pacingStatus.daysRemaining,
-          BUDGET_GUARD_REDUCTION_FRACTION,
-          action,
-        );
-      finalAllocations = reducedAllocations;
-      notes += reduceNote;
+      const { noteSuffix } = await applyBudgetReduction(
+        input.currentAllocations,
+        input.campaignId,
+        totalSpentUsd,
+        pacingStatus.daysRemaining,
+        BUDGET_GUARD_REDUCTION_FRACTION,
+        action,
+      );
+      notes += noteSuffix;
       break;
     }
 
     case 'NONE':
     default:
-      // No action needed — log at debug level only.
-      logger.debug('Budget guard: no action needed', {
-        campaignId: input.campaignId,
-        state: pacingStatus.state,
-      });
+      logger.debug('No action needed', { campaignId: input.campaignId });
       break;
   }
 
-  // ── 5. Persist guard run ───────────────────────────────────────────────────
   await createBudgetGuardRun({
     campaignId: input.campaignDbId,
     pacingState: pacingStatus.state,

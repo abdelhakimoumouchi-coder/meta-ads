@@ -17,7 +17,6 @@ import {
 } from '../constants/app';
 import {
   PACING_UNDER_THRESHOLD,
-  PACING_OVER_THRESHOLD,
   PACING_DANGER_THRESHOLD,
 } from '../constants/optimizer';
 import { expectedSpend, maxAllowedSpend } from '../utils/money';

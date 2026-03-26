@@ -1,0 +1,211 @@
+// prisma/schema.prisma
+//
+// Meta Ads Optimizer — SQLite schema.
+// Designed for local development with SQLite and Vercel Postgres in production
+// (use provider = "postgresql" and a DATABASE_URL pointing to Postgres).
+//
+// Run:  npx prisma migrate dev --name init
+//       npx prisma generate
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Campaign ─────────────────────────────────────────────────────────────────
+
+model Campaign {
+  id                  String    @id @default(cuid())
+  /// Meta campaign ID (e.g. "120200123456789")
+  metaId              String    @unique
+  name                String
+  status              String    // ACTIVE | PAUSED | DELETED | ARCHIVED
+  /// Daily budget in USD cents at the campaign level (may be null if lifetime)
+  dailyBudgetCents    Int?
+  /// Lifetime budget in USD cents (may be null if daily)
+  lifetimeBudgetCents Int?
+  startDate           DateTime?
+  stopDate            DateTime?
+  objectiveType       String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  syncedAt            DateTime  @default(now())
+
+  adSets              AdSet[]
+  ads                 Ad[]
+  adMetrics           AdMetrics[]
+  optimizationRuns    OptimizationRun[]
+  budgetGuardRuns     BudgetGuardRun[]
+  syncRuns            SyncRun[]
+}
+
+// ─── AdSet ────────────────────────────────────────────────────────────────────
+
+model AdSet {
+  id               String    @id @default(cuid())
+  /// Meta ad set ID
+  metaId           String    @unique
+  campaignId       String
+  name             String
+  status           String    // ACTIVE | PAUSED | …
+  /// Daily budget in USD cents
+  dailyBudgetCents Int
+  billingEvent     String?
+  optimizationGoal String?
+  startTime        DateTime?
+  endTime          DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  syncedAt         DateTime  @default(now())
+
+  campaign         Campaign  @relation(fields: [campaignId], references: [id])
+  ads              Ad[]
+  budgetHistory    BudgetHistory[]
+}
+
+// ─── Ad / Creative ────────────────────────────────────────────────────────────
+
+model Ad {
+  id         String   @id @default(cuid())
+  /// Meta ad ID
+  metaId     String   @unique
+  adSetId    String
+  campaignId String
+  name       String
+  status     String   // ACTIVE | PAUSED | DISAPPROVED | …
+  creativeId String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  syncedAt   DateTime @default(now())
+
+  adSet      AdSet    @relation(fields: [adSetId], references: [id])
+  campaign   Campaign @relation(fields: [campaignId], references: [id])
+  metrics    AdMetrics[]
+}
+
+// ─── Daily metrics snapshot ───────────────────────────────────────────────────
+//
+// One row per (adId, date).  Written by the sync job; never mutated.
+
+model AdMetrics {
+  id                       String   @id @default(cuid())
+  adId                     String
+  campaignId               String
+  /// UTC midnight of the day these metrics cover
+  date                     DateTime
+  impressions              Int      @default(0)
+  clicks                   Int      @default(0)
+  linkClicks               Int      @default(0)
+  /// Total spend in USD cents
+  spendCents               Int      @default(0)
+  reach                    Int      @default(0)
+  frequency                Float    @default(0)
+  cpm                      Float    @default(0)
+  ctr                      Float    @default(0)
+  cpc                      Float    @default(0)
+  conversationsStarted     Int      @default(0)
+  costPerConversationCents Int      @default(0)
+  videoPct25               Int      @default(0)
+  videoPct50               Int      @default(0)
+  videoPct75               Int      @default(0)
+  videoPct100              Int      @default(0)
+  videoThruPlays           Int      @default(0)
+  outboundClicks           Int      @default(0)
+  outboundCtr              Float    @default(0)
+  reactions                Int      @default(0)
+  comments                 Int      @default(0)
+  shares                   Int      @default(0)
+  createdAt                DateTime @default(now())
+
+  ad       Ad       @relation(fields: [adId], references: [id])
+  campaign Campaign @relation(fields: [campaignId], references: [id])
+
+  @@unique([adId, date])
+}
+
+// ─── Budget history ───────────────────────────────────────────────────────────
+//
+// Append-only log of every budget change applied to an ad set.
+
+model BudgetHistory {
+  id               String   @id @default(cuid())
+  adSetId          String
+  /// Daily budget in USD cents BEFORE the change
+  previousCents    Int
+  /// Daily budget in USD cents AFTER the change
+  newCents         Int
+  /// Human-readable reason / trigger (e.g. "optimizer_run", "budget_guard")
+  reason           String
+  createdAt        DateTime @default(now())
+
+  adSet            AdSet    @relation(fields: [adSetId], references: [id])
+}
+
+// ─── Optimization decision log ────────────────────────────────────────────────
+
+model OptimizationRun {
+  id                     String   @id @default(cuid())
+  campaignId             String
+  /// "cron" | "manual"
+  triggeredBy            String
+  /// Did a reallocation actually happen?
+  reallocated            Boolean  @default(false)
+  /// Why the run was skipped (null if it executed)
+  skipReason             String?
+  /// JSON: AdBudgetAllocation[] before the run
+  previousAllocationJson String
+  /// JSON: AdBudgetAllocation[] after the run (null if skipped)
+  newAllocationJson      String?
+  /// JSON: AdScore[] used for this decision
+  scoresJson             String
+  createdAt              DateTime @default(now())
+
+  campaign               Campaign @relation(fields: [campaignId], references: [id])
+}
+
+// ─── Budget guard log ─────────────────────────────────────────────────────────
+
+model BudgetGuardRun {
+  id                String   @id @default(cuid())
+  campaignId        String
+  pacingState       String
+  totalSpendCents   Int
+  expectedSpendCents Int
+  action            String
+  notes             String?
+  createdAt         DateTime @default(now())
+
+  campaign          Campaign @relation(fields: [campaignId], references: [id])
+}
+
+// ─── Sync run log ─────────────────────────────────────────────────────────────
+
+model SyncRun {
+  id           String   @id @default(cuid())
+  campaignId   String
+  success      Boolean
+  errorMessage String?
+  durationMs   Int
+  createdAt    DateTime @default(now())
+
+  campaign     Campaign @relation(fields: [campaignId], references: [id])
+}
+
+// ─── System log ───────────────────────────────────────────────────────────────
+//
+// Lightweight structured log table for events that should be observable from
+// the dashboard without tailing a server log.
+
+model SystemLog {
+  id         String   @id @default(cuid())
+  level      String   // "info" | "warn" | "error"
+  context    String   // e.g. "sync", "optimizer", "budget_guard"
+  message    String
+  /// Optional JSON metadata blob
+  metaJson   String?
+  createdAt  DateTime @default(now())
+}

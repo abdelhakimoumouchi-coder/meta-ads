@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import { NextResponse } from "next/server";
 
 export async function GET() {
@@ -7,7 +6,6 @@ export async function GET() {
     message: "Campaign budgets route placeholder",
   });
 }
-=======
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { findCampaignById, listAdSetsForCampaign, recordBudgetHistory } from '../../../../../lib/db/queries';
@@ -129,4 +127,3 @@ export async function PATCH(
     newBudgetUsd: centsToUsd(newCents),
   });
 }
->>>>>>> copilot/fix-typescript-build-issues

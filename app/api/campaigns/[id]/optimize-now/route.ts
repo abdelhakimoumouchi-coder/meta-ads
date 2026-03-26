@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import { NextResponse } from "next/server";
 
 export async function POST() {
@@ -7,7 +6,6 @@ export async function POST() {
     message: "Optimize now triggered (placeholder)",
   });
 }
-=======
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { runOptimizer } from '../../../../../lib/optimizer/decision-engine';
@@ -63,4 +61,3 @@ export async function POST(
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
->>>>>>> copilot/fix-typescript-build-issues

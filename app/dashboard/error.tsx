@@ -1,6 +1,4 @@
-<<<<<<< HEAD
 "use client";
-=======
 'use client';
 
 import { useEffect } from 'react';
@@ -32,4 +30,3 @@ export default function DashboardError({ error, reset }: DashboardErrorProps) {
     </div>
   );
 }
->>>>>>> copilot/fix-typescript-build-issues

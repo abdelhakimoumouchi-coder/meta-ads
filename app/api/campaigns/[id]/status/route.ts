@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { centsToUsd } from "@/lib/utils/money";
@@ -115,7 +114,6 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     );
   }
 }
-=======
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { findCampaignById } from '../../../../../lib/db/queries';
@@ -201,4 +199,3 @@ export async function PATCH(
     newStatus: status,
   });
 }
->>>>>>> copilot/fix-typescript-build-issues

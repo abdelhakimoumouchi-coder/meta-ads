@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { runBudgetGuard } from '../../../../lib/budget/safety';
 import {
   findCampaignByMetaId,
@@ -14,6 +15,13 @@ import { BASE_DAILY_BUDGET } from '../../../../lib/constants/app';
 import type { AdBudgetAllocation } from '../../../../types/campaign';
 
 export const dynamic = 'force-dynamic';
+
+// ─── Validation schema ────────────────────────────────────────────────────────
+
+const BudgetGuardBodySchema = z.object({
+  campaignMetaId: z.string().min(1).optional(),
+  dryRun: z.boolean().optional(),
+}).optional();
 
 // ─── Authorization guard ──────────────────────────────────────────────────────
 
@@ -114,15 +122,20 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   await logger.info('budget-guard cron started', { dryRun: IS_DRY_RUN });
 
-  // Determine which campaign(s) to guard.
+  // Parse and validate request body.
   let requestCampaignId: string | null = null;
   let requestDryRun: boolean | undefined;
   try {
-    const body = (await req.json()) as Record<string, unknown>;
-    if (typeof body.campaignMetaId === 'string' && body.campaignMetaId.trim()) {
-      requestCampaignId = body.campaignMetaId.trim();
+    const rawBody = await req.json();
+    const parsed = BudgetGuardBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { ok: false, error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+        { status: 400 },
+      );
     }
-    if (typeof body.dryRun === 'boolean') requestDryRun = body.dryRun;
+    if (parsed.data?.campaignMetaId) requestCampaignId = parsed.data.campaignMetaId;
+    if (typeof parsed.data?.dryRun === 'boolean') requestDryRun = parsed.data.dryRun;
   } catch {
     // Empty body is fine.
   }

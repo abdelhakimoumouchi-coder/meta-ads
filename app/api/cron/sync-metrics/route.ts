@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { syncCampaign } from '../../../../lib/sync/sync-campaign';
 import { syncAdSets } from '../../../../lib/sync/sync-adsets';
 import { syncAds } from '../../../../lib/sync/sync-ads';
@@ -8,6 +9,12 @@ import { META_CAMPAIGN_ID } from '../../../../lib/meta/config';
 import { cronLogger as logger } from '../../../../lib/logs/logger';
 
 export const dynamic = 'force-dynamic';
+
+// ─── Validation schema ────────────────────────────────────────────────────────
+
+const SyncMetricsBodySchema = z.object({
+  campaignMetaId: z.string().min(1).optional(),
+}).optional();
 
 // ─── Authorization guard ──────────────────────────────────────────────────────
 
@@ -26,15 +33,19 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const startedAt = Date.now();
 
-  // Determine which campaign to sync:
-  // 1. Accept optional campaignMetaId from request body.
-  // 2. Fall back to META_CAMPAIGN_ID env.
-  // 3. If neither is set, check if any campaigns exist in DB; if so, sync metrics only.
+  // Parse and validate request body.
   let requestCampaignId: string | null = null;
   try {
-    const body = (await req.json()) as Record<string, unknown>;
-    if (typeof body.campaignMetaId === 'string' && body.campaignMetaId.trim()) {
-      requestCampaignId = body.campaignMetaId.trim();
+    const rawBody = await req.json();
+    const parsed = SyncMetricsBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { ok: false, error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+        { status: 400 },
+      );
+    }
+    if (parsed.data?.campaignMetaId) {
+      requestCampaignId = parsed.data.campaignMetaId;
     }
   } catch {
     // Empty body is fine.
@@ -49,14 +60,14 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (existing.length === 0) {
       await logger.warn('sync-metrics skipped: no META_CAMPAIGN_ID configured and no campaigns in DB', {});
       return NextResponse.json({
-        ok: true,
+        ok: false,
         status: 'SKIPPED',
-        skipReason: 'NO_META_CAMPAIGN_ID',
+        skipReason: 'NO_CAMPAIGNS',
         message: 'Set META_CAMPAIGN_ID env or pass campaignMetaId in request body.',
       });
     }
 
-    // Sync metrics for all campaigns already in DB.
+    // Sync metrics for all campaigns already in DB, passing the campaign's own metaId.
     await logger.info('sync-metrics: syncing metrics for all DB campaigns (no META_CAMPAIGN_ID)', {
       campaignCount: existing.length,
     });
@@ -68,7 +79,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     for (const campaign of existing) {
       const campaignStart = Date.now();
       try {
-        const metricsResult = await syncMetrics();
+        const metricsResult = await syncMetrics(campaign.metaId);
         totalUpserted += metricsResult.upsertedCount;
         totalSkipped += metricsResult.skippedCount;
         await createSyncRun({
@@ -121,10 +132,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     await logger.info('sync-metrics cron started', { campaignMetaId: targetMetaId });
 
-    const campaignResult = await syncCampaign();
-    const adSetsResult = await syncAdSets();
-    const adsResult = await syncAds();
-    const metricsResult = await syncMetrics();
+    const campaignResult = await syncCampaign(targetMetaId);
+    const adSetsResult = await syncAdSets(targetMetaId);
+    const adsResult = await syncAds(targetMetaId);
+    const metricsResult = await syncMetrics(targetMetaId);
 
     const durationMs = Date.now() - startedAt;
 

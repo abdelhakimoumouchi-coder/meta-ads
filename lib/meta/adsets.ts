@@ -32,12 +32,15 @@ export async function fetchAdSet(adSetId: string): Promise<MetaAdSetRaw> {
 }
 
 /**
- * Fetch all ad sets belonging to the configured campaign.
+ * Fetch all ad sets belonging to a campaign.
  * Uses cursor-based pagination to handle campaigns with many ad sets.
+ *
+ * @param campaignMetaId  Override the META_CAMPAIGN_ID env var.
  */
-export async function fetchCampaignAdSets(): Promise<MetaAdSetRaw[]> {
+export async function fetchCampaignAdSets(campaignMetaId?: string): Promise<MetaAdSetRaw[]> {
+  const id = campaignMetaId ?? META_CAMPAIGN_ID;
   return metaGetAll<MetaAdSetRaw>(
-    `${META_CAMPAIGN_ID}/adsets`,
+    `${id}/adsets`,
     { fields: ADSET_FIELDS, limit: '50' },
   );
 }

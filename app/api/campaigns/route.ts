@@ -6,9 +6,50 @@
  */
 
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import prisma from '../../../lib/db/prisma';
 
 export const dynamic = 'force-dynamic';
+
+// ─── Validation schema ────────────────────────────────────────────────────────
+
+const VALID_STATUSES = ['ACTIVE', 'PAUSED', 'DELETED', 'ARCHIVED'] as const;
+
+const CreateCampaignSchema = z.object({
+  metaId: z.string().min(1, 'metaId is required'),
+  name: z.string().min(1, 'name is required'),
+  status: z
+    .string()
+    .transform((s) => s.toUpperCase())
+    .pipe(z.enum(VALID_STATUSES))
+    .optional()
+    .default('PAUSED'),
+  objectiveType: z.string().min(1).optional().nullable(),
+  dailyBudgetCents: z
+    .number()
+    .int('dailyBudgetCents must be an integer')
+    .min(0, 'dailyBudgetCents must be >= 0')
+    .max(10_000_000, 'dailyBudgetCents exceeds maximum ($100,000/day)')
+    .optional()
+    .nullable(),
+  lifetimeBudgetCents: z
+    .number()
+    .int('lifetimeBudgetCents must be an integer')
+    .min(0, 'lifetimeBudgetCents must be >= 0')
+    .max(10_000_000, 'lifetimeBudgetCents exceeds maximum ($100,000)')
+    .optional()
+    .nullable(),
+  startDate: z
+    .string()
+    .datetime({ message: 'startDate must be a valid ISO 8601 date string' })
+    .optional()
+    .nullable(),
+  stopDate: z
+    .string()
+    .datetime({ message: 'stopDate must be a valid ISO 8601 date string' })
+    .optional()
+    .nullable(),
+});
 
 // ─── GET /api/campaigns ───────────────────────────────────────────────────────
 
@@ -70,46 +111,33 @@ export async function GET(): Promise<NextResponse> {
 // ─── POST /api/campaigns ──────────────────────────────────────────────────────
 
 export async function POST(req: Request): Promise<NextResponse> {
+  let rawBody: unknown;
   try {
-    const body = (await req.json()) as Record<string, unknown>;
+    rawBody = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-    // Validate required fields.
-    const metaId =
-      typeof body.metaId === 'string' ? body.metaId.trim() : '';
-    const name =
-      typeof body.name === 'string' ? body.name.trim() : '';
+  const parsed = CreateCampaignSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { ok: false, error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 },
+    );
+  }
 
-    if (!metaId) {
-      return NextResponse.json(
-        { ok: false, error: 'metaId is required' },
-        { status: 400 },
-      );
-    }
-    if (!name) {
-      return NextResponse.json(
-        { ok: false, error: 'name is required' },
-        { status: 400 },
-      );
-    }
+  const {
+    metaId,
+    name,
+    status,
+    objectiveType,
+    dailyBudgetCents,
+    lifetimeBudgetCents,
+    startDate,
+    stopDate,
+  } = parsed.data;
 
-    // Parse optional numeric / date fields.
-    const dailyBudgetCents =
-      typeof body.dailyBudgetCents === 'number' && body.dailyBudgetCents >= 0
-        ? body.dailyBudgetCents
-        : null;
-    const lifetimeBudgetCents =
-      typeof body.lifetimeBudgetCents === 'number' && body.lifetimeBudgetCents >= 0
-        ? body.lifetimeBudgetCents
-        : null;
-    const startDate =
-      typeof body.startDate === 'string' ? new Date(body.startDate) : null;
-    const stopDate =
-      typeof body.stopDate === 'string' ? new Date(body.stopDate) : null;
-    const status =
-      typeof body.status === 'string' ? body.status.toUpperCase() : 'PAUSED';
-    const objectiveType =
-      typeof body.objectiveType === 'string' ? body.objectiveType : null;
-
+  try {
     const now = new Date();
 
     const campaign = await prisma.campaign.upsert({
@@ -118,21 +146,21 @@ export async function POST(req: Request): Promise<NextResponse> {
         metaId,
         name,
         status,
-        dailyBudgetCents,
-        lifetimeBudgetCents,
-        startDate,
-        stopDate,
-        objectiveType,
+        dailyBudgetCents: dailyBudgetCents ?? null,
+        lifetimeBudgetCents: lifetimeBudgetCents ?? null,
+        startDate: startDate ? new Date(startDate) : null,
+        stopDate: stopDate ? new Date(stopDate) : null,
+        objectiveType: objectiveType ?? null,
         syncedAt: now,
       },
       update: {
         name,
         status,
-        dailyBudgetCents,
-        lifetimeBudgetCents,
-        startDate,
-        stopDate,
-        objectiveType,
+        dailyBudgetCents: dailyBudgetCents ?? null,
+        lifetimeBudgetCents: lifetimeBudgetCents ?? null,
+        startDate: startDate ? new Date(startDate) : null,
+        stopDate: stopDate ? new Date(stopDate) : null,
+        objectiveType: objectiveType ?? null,
         syncedAt: now,
       },
     });

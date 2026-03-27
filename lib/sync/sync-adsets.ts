@@ -29,22 +29,26 @@ export interface SyncAdSetsResult {
 /**
  * Fetch all ad sets for the campaign from Meta and persist them.
  *
+ * @param campaignMetaId  Meta campaign ID to sync.  Falls back to the
+ *                        META_CAMPAIGN_ID environment variable when omitted.
+ *
  * Requires the campaign to already exist in the local DB (sync campaign first).
  * Throws if the campaign record is not found — this indicates a sync ordering issue.
  */
-export async function syncAdSets(): Promise<SyncAdSetsResult> {
-  logger.debug('Looking up campaign in DB', { metaId: META_CAMPAIGN_ID });
+export async function syncAdSets(campaignMetaId?: string): Promise<SyncAdSetsResult> {
+  const metaId = campaignMetaId ?? META_CAMPAIGN_ID;
+  logger.debug('Looking up campaign in DB', { metaId });
 
   // Resolve the internal campaign DB ID from the Meta campaign ID.
-  const campaign = await findCampaignByMetaId(META_CAMPAIGN_ID);
+  const campaign = await findCampaignByMetaId(metaId);
   if (!campaign) {
     throw new Error(
-      `[sync:adsets] Campaign ${META_CAMPAIGN_ID} not found in DB — run syncCampaign() first.`,
+      `[sync:adsets] Campaign ${metaId} not found in DB — run syncCampaign() first.`,
     );
   }
 
   logger.debug('Fetching ad sets from Meta API');
-  const rawAdSets = await fetchCampaignAdSets();
+  const rawAdSets = await fetchCampaignAdSets(metaId);
 
   const adSets: AdSet[] = [];
   let upsertedCount = 0;
@@ -95,7 +99,7 @@ export async function syncAdSets(): Promise<SyncAdSetsResult> {
   }
 
   await logger.info('Ad sets synced', {
-    campaignMetaId: META_CAMPAIGN_ID,
+    campaignMetaId: metaId,
     upsertedCount,
     skippedCount,
     total: rawAdSets.length,

@@ -12,7 +12,7 @@
 
 import type { AdMetrics } from '@prisma/client';
 import { fetchAdInsights, normaliseInsights } from '../meta/insights';
-import { upsertAdMetrics, findCampaignByMetaId, findAdByMetaId } from '../db/queries';
+import { upsertAdMetrics, findCampaignByMetaId, listAdsForCampaign } from '../db/queries';
 import { META_CAMPAIGN_ID, META_AD_IDS } from '../meta/config';
 import { usdToCents } from '../utils/money';
 import { createLogger } from '../logs/logger';
@@ -75,28 +75,48 @@ async function persistMetricsRow(
 // ─── Main sync function ───────────────────────────────────────────────────────
 
 /**
- * Sync performance metrics for all configured ads.
+ * Sync performance metrics for all tracked ads belonging to a campaign.
  *
- * The list of ad IDs comes from `META_AD_IDS` (set via env) if provided,
- * otherwise all ads for the campaign are fetched from the DB.
+ * @param campaignMetaId  Meta campaign ID to sync.  Falls back to the
+ *                        META_CAMPAIGN_ID environment variable when omitted.
+ *
+ * Ad IDs are resolved from the DB (all ads for the campaign) so the sync is
+ * self-contained per campaign and does not rely on META_AD_IDS env being set.
+ * META_AD_IDS is used as an override only when no campaignMetaId is provided.
  *
  * Requires campaign and ad records to exist in the DB.
  */
-export async function syncMetrics(): Promise<SyncMetricsResult> {
-  logger.debug('Resolving campaign in DB', { metaId: META_CAMPAIGN_ID });
+export async function syncMetrics(campaignMetaId?: string): Promise<SyncMetricsResult> {
+  const metaId = campaignMetaId ?? META_CAMPAIGN_ID;
+  logger.debug('Resolving campaign in DB', { metaId });
 
-  const campaign = await findCampaignByMetaId(META_CAMPAIGN_ID);
+  const campaign = await findCampaignByMetaId(metaId);
   if (!campaign) {
     throw new Error(
-      `[sync:metrics] Campaign ${META_CAMPAIGN_ID} not found in DB — run syncCampaign() first.`,
+      `[sync:metrics] Campaign ${metaId} not found in DB — run syncCampaign() first.`,
     );
   }
 
-  // Determine which Meta ad IDs to sync.
-  const adMetaIds = META_AD_IDS.length > 0 ? META_AD_IDS : [];
+  // Resolve the ads for this campaign from the DB once, building a metaId→record map.
+  // When META_AD_IDS is used (legacy, no campaignMetaId), filter the map to only those IDs.
+  const campaignAds = await listAdsForCampaign(campaign.id);
+  const adByMetaId = new Map(campaignAds.map((a) => [a.metaId, a]));
+
+  // Determine which Meta ad IDs to sync:
+  // When a specific campaignMetaId is provided, use all ads found for that campaign in the DB.
+  // Otherwise fall back to META_AD_IDS env for backward compatibility.
+  let adMetaIds: string[];
+
+  if (campaignMetaId) {
+    adMetaIds = campaignAds.map((a) => a.metaId);
+  } else {
+    adMetaIds = META_AD_IDS.length > 0 ? META_AD_IDS : [];
+  }
+
   if (adMetaIds.length === 0) {
     await logger.warn(
-      'META_AD_IDS is empty — no metrics to sync. Set META_AD_IDS in .env.',
+      'No ad IDs to sync — run syncAds() first or set META_AD_IDS in .env.',
+      { campaignMetaId: metaId },
     );
     return { metricsRows: [], upsertedCount: 0, skippedCount: 0, adCount: 0 };
   }
@@ -108,22 +128,19 @@ export async function syncMetrics(): Promise<SyncMetricsResult> {
   let skippedCount = 0;
 
   for (const adMetaId of adMetaIds) {
-    // Resolve internal ad DB ID.
-    const adRecord = await findAdByMetaId(adMetaId);
-    if (!adRecord) {
-      await logger.warn('Ad not found in DB — skipping metrics sync', {
-        adMetaId,
-      });
-      skippedCount++;
-      continue;
-    }
-
     try {
       logger.debug('Fetching insights for ad', { adMetaId });
       const rawRows = await fetchAdInsights(adMetaId);
       const normalisedRows = normaliseInsights(rawRows);
 
       for (const metrics of normalisedRows) {
+        const adRecord = adByMetaId.get(adMetaId);
+        if (!adRecord) {
+          await logger.warn('Ad not found in DB — skipping metrics row', { adMetaId });
+          skippedCount++;
+          continue;
+        }
+
         try {
           const row = await persistMetricsRow(metrics, campaign.id, adRecord.id);
           allMetricsRows.push(row);
@@ -147,6 +164,7 @@ export async function syncMetrics(): Promise<SyncMetricsResult> {
   }
 
   await logger.info('Metrics sync complete', {
+    campaignMetaId: metaId,
     adCount: adMetaIds.length,
     upsertedCount,
     skippedCount,

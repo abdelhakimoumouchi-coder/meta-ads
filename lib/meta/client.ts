@@ -97,6 +97,16 @@ async function metaRequest<T>(
   params: Record<string, string | string[] | number | boolean> = {},
   body?: Record<string, string | number | boolean>,
 ): Promise<T> {
+  // Validate credentials at request time so that missing env vars produce a
+  // clear error message rather than a silent empty-string token.
+  if (!META_ACCESS_TOKEN) {
+    throw new MetaApiError(
+      'META_ACCESS_TOKEN is not configured — set it in your environment variables.',
+      0,
+      'ConfigError',
+    );
+  }
+
   // Always inject the access token.
   const allParams: Record<string, string | string[] | number | boolean> = {
     access_token: META_ACCESS_TOKEN,

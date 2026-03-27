@@ -55,6 +55,11 @@ const logger = createLogger('optimizer');
 
 export interface RunOptimizerInput {
   trigger: OptimizationTrigger;
+  /**
+   * Explicitly target a campaign by Meta campaign ID.
+   * Falls back to the META_CAMPAIGN_ID environment variable when omitted.
+   */
+  campaignMetaId?: string;
   /** Override campaign start date (useful for testing). */
   campaignStartDate?: Date;
   now?: Date;
@@ -150,10 +155,17 @@ export async function runOptimizer(
   const now = input.now ?? new Date();
 
   // ── 1. Resolve campaign ────────────────────────────────────────────────────
-  const campaign = await findCampaignByMetaId(META_CAMPAIGN_ID);
+  const targetMetaId = input.campaignMetaId ?? META_CAMPAIGN_ID;
+  if (!targetMetaId) {
+    throw new Error(
+      '[optimizer] No campaign ID provided. Pass campaignMetaId parameter or set META_CAMPAIGN_ID environment variable.',
+    );
+  }
+
+  const campaign = await findCampaignByMetaId(targetMetaId);
   if (!campaign) {
     throw new Error(
-      `[optimizer] Campaign ${META_CAMPAIGN_ID} not found in DB. Run sync first.`,
+      `[optimizer] Campaign ${targetMetaId} not found in DB. Run sync first.`,
     );
   }
 
@@ -206,7 +218,7 @@ export async function runOptimizer(
 
   if (!guardResult.allowed) {
     await logger.info('Optimizer skipped', {
-      campaignId: META_CAMPAIGN_ID,
+      campaignId: targetMetaId,
       trigger: input.trigger,
       skipReason: guardResult.skipReason,
       message: guardResult.message,
@@ -224,7 +236,7 @@ export async function runOptimizer(
     });
 
     return {
-      campaignId: META_CAMPAIGN_ID,
+      campaignId: targetMetaId,
       trigger: input.trigger,
       reallocated: false,
       skipReason: guardResult.skipReason,
@@ -243,7 +255,7 @@ export async function runOptimizer(
   });
 
   await logger.info('Reallocation computed', {
-    campaignId: META_CAMPAIGN_ID,
+    campaignId: targetMetaId,
     trigger: input.trigger,
     deltas: reallocationResult.deltas,
     newTotalUsd: reallocationResult.newTotalUsd,
@@ -285,14 +297,14 @@ export async function runOptimizer(
   });
 
   await logger.info('Optimization complete', {
-    campaignId: META_CAMPAIGN_ID,
+    campaignId: targetMetaId,
     trigger: input.trigger,
     newTotalUsd: reallocationResult.newTotalUsd,
     scores: scores.map((s) => ({ adId: s.adId, score: s.finalScore, eligible: s.isEligible })),
   });
 
   return {
-    campaignId: META_CAMPAIGN_ID,
+    campaignId: targetMetaId,
     trigger: input.trigger,
     reallocated: true,
     scores,

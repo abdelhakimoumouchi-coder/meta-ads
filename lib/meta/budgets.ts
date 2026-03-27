@@ -10,6 +10,7 @@
 
 import type { MetaBudgetUpdateResponse } from '../../types/meta';
 import { metaGet, metaPost } from './client';
+import { IS_DRY_RUN } from '../constants/app';
 
 /**
  * Read the current daily_budget (in USD cents) for an ad set.
@@ -44,6 +45,19 @@ export async function updateAdSetDailyBudget(
     throw new Error(
       `[budgets] Refusing to set daily budget below $1.00 (got ${cents} cents) for adset ${adSetId}`,
     );
+  }
+
+  if (IS_DRY_RUN) {
+    console.info(
+      JSON.stringify({
+        level: 'info',
+        context: 'budgets:dry-run',
+        message: `[dry-run] Would update adset ${adSetId} daily_budget to ${cents} cents ($${(cents / 100).toFixed(2)})`,
+        meta: { adSetId, cents },
+        timestamp: new Date().toISOString(),
+      }),
+    );
+    return true;
   }
 
   const result = await metaPost<MetaBudgetUpdateResponse>(

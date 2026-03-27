@@ -49,7 +49,7 @@ export const META_PIXEL_ID = envString('META_PIXEL_ID', '');
 
 // ─── Campaign / Ad Entity IDs ─────────────────────────────────────────────────
 
-export const META_CAMPAIGN_ID = requireEnv('META_CAMPAIGN_ID');
+export const META_CAMPAIGN_ID = envString('META_CAMPAIGN_ID', '');
 
 /** List of ad set IDs belonging to the campaign. */
 export const META_ADSET_IDS: string[] = envArray('META_ADSET_IDS');

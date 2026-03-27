@@ -112,3 +112,23 @@ export const AUTO_PAUSE_IF_BUDGET_REACHED = envBoolean('AUTO_PAUSE_IF_BUDGET_REA
 
 /** Automatically pause all ads when the campaign's end date is reached. */
 export const AUTO_PAUSE_IF_CAMPAIGN_END_REACHED = envBoolean('AUTO_PAUSE_IF_CAMPAIGN_END_REACHED', true);
+
+// ─── Mutation safety mode ─────────────────────────────────────────────────────
+
+/**
+ * Controls whether Meta API mutations (budget updates, ad pauses) are actually
+ * executed or only simulated.  Set to "live" to allow real mutations; any other
+ * value (including the default "dry-run") prevents writes to the Meta API.
+ *
+ * Example:
+ *   META_MUTATION_MODE=live   → budgets / pauses are applied via Meta API
+ *   META_MUTATION_MODE=dry-run (default) → mutations are logged but not applied
+ */
+export const META_MUTATION_MODE = envString('META_MUTATION_MODE', 'dry-run');
+
+/**
+ * True when mutations are in dry-run mode (no actual writes to Meta API).
+ * Use IS_DRY_RUN as the single authoritative gate for all Meta API mutations.
+ */
+export const IS_DRY_RUN = META_MUTATION_MODE !== 'live';
+

@@ -3,17 +3,123 @@ import { syncCampaign } from '../../../../lib/sync/sync-campaign';
 import { syncAdSets } from '../../../../lib/sync/sync-adsets';
 import { syncAds } from '../../../../lib/sync/sync-ads';
 import { syncMetrics } from '../../../../lib/sync/sync-metrics';
-import { createSyncRun, findCampaignByMetaId } from '../../../../lib/db/queries';
+import { createSyncRun, findCampaignByMetaId, listCampaigns } from '../../../../lib/db/queries';
 import { META_CAMPAIGN_ID } from '../../../../lib/meta/config';
 import { cronLogger as logger } from '../../../../lib/logs/logger';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(): Promise<NextResponse> {
+// ─── Authorization guard ──────────────────────────────────────────────────────
+
+function isAuthorized(req: Request): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+  const authHeader = req.headers.get('authorization') ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  return token === secret;
+}
+
+export async function POST(req: Request): Promise<NextResponse> {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+  }
+
   const startedAt = Date.now();
 
+  // Determine which campaign to sync:
+  // 1. Accept optional campaignMetaId from request body.
+  // 2. Fall back to META_CAMPAIGN_ID env.
+  // 3. If neither is set, check if any campaigns exist in DB; if so, sync metrics only.
+  let requestCampaignId: string | null = null;
   try {
-    await logger.info('sync-metrics cron started');
+    const body = (await req.json()) as Record<string, unknown>;
+    if (typeof body.campaignMetaId === 'string' && body.campaignMetaId.trim()) {
+      requestCampaignId = body.campaignMetaId.trim();
+    }
+  } catch {
+    // Empty body is fine.
+  }
+
+  const targetMetaId = requestCampaignId ?? (META_CAMPAIGN_ID || null);
+
+  // If no Meta campaign ID is configured, we can only sync metrics for campaigns
+  // already present in the DB (no fresh Meta API fetch for campaign/adsets/ads).
+  if (!targetMetaId) {
+    const existing = await listCampaigns();
+    if (existing.length === 0) {
+      await logger.warn('sync-metrics skipped: no META_CAMPAIGN_ID configured and no campaigns in DB', {});
+      return NextResponse.json({
+        ok: true,
+        status: 'SKIPPED',
+        skipReason: 'NO_META_CAMPAIGN_ID',
+        message: 'Set META_CAMPAIGN_ID env or pass campaignMetaId in request body.',
+      });
+    }
+
+    // Sync metrics for all campaigns already in DB.
+    await logger.info('sync-metrics: syncing metrics for all DB campaigns (no META_CAMPAIGN_ID)', {
+      campaignCount: existing.length,
+    });
+
+    let totalUpserted = 0;
+    let totalSkipped = 0;
+    let failedCampaigns = 0;
+
+    for (const campaign of existing) {
+      const campaignStart = Date.now();
+      try {
+        const metricsResult = await syncMetrics();
+        totalUpserted += metricsResult.upsertedCount;
+        totalSkipped += metricsResult.skippedCount;
+        await createSyncRun({
+          campaignId: campaign.id,
+          success: true,
+          errorMessage: null,
+          durationMs: Date.now() - campaignStart,
+        });
+      } catch (err) {
+        failedCampaigns++;
+        const message = err instanceof Error ? err.message : String(err);
+        await createSyncRun({
+          campaignId: campaign.id,
+          success: false,
+          errorMessage: message,
+          durationMs: Date.now() - campaignStart,
+        }).catch(() => undefined);
+      }
+    }
+
+    let status: string;
+    if (failedCampaigns === 0) {
+      status = 'SUCCESS';
+    } else if (failedCampaigns === existing.length) {
+      status = 'FAILED';
+    } else {
+      status = 'PARTIAL_SUCCESS';
+    }
+    const durationMs = Date.now() - startedAt;
+
+    await logger.info(`sync-metrics complete: ${status}`, {
+      durationMs,
+      campaignsProcessed: existing.length,
+      failedCampaigns,
+      totalUpserted,
+      totalSkipped,
+    });
+
+    return NextResponse.json({
+      ok: status !== 'FAILED',
+      status,
+      durationMs,
+      campaignsProcessed: existing.length,
+      failedCampaigns,
+      metrics: { upsertedCount: totalUpserted, skippedCount: totalSkipped },
+    }, { status: status === 'FAILED' ? 500 : 200 });
+  }
+
+  // Full sync for the target campaign (Meta API → DB).
+  try {
+    await logger.info('sync-metrics cron started', { campaignMetaId: targetMetaId });
 
     const campaignResult = await syncCampaign();
     const adSetsResult = await syncAdSets();
@@ -22,30 +128,46 @@ export async function POST(): Promise<NextResponse> {
 
     const durationMs = Date.now() - startedAt;
 
-    const campaign = await findCampaignByMetaId(META_CAMPAIGN_ID);
+    // Truthfully report success vs partial failure.
+    const hasPartialFailure =
+      adSetsResult.skippedCount > 0 ||
+      adsResult.skippedCount > 0 ||
+      metricsResult.skippedCount > 0;
+
+    const status = hasPartialFailure ? 'PARTIAL_SUCCESS' : 'SUCCESS';
+
+    const campaign = await findCampaignByMetaId(targetMetaId);
     if (campaign) {
       await createSyncRun({
         campaignId: campaign.id,
-        success: true,
-        errorMessage: null,
+        success: !hasPartialFailure,
+        errorMessage: hasPartialFailure
+          ? `Partial sync: adsets_skipped=${adSetsResult.skippedCount} ads_skipped=${adsResult.skippedCount} metrics_skipped=${metricsResult.skippedCount}`
+          : null,
         durationMs,
       });
     }
 
-    await logger.info('sync-metrics cron complete', {
+    await logger.info(`sync-metrics cron complete: ${status}`, {
       durationMs,
-      campaignWasCreated: campaignResult.wasCreated,
-      adSetsUpserted: adSetsResult.upsertedCount,
-      adsUpserted: adsResult.upsertedCount,
-      metricsUpserted: metricsResult.upsertedCount,
+      status,
+      campaign: { metaId: campaignResult.campaign.metaId, wasCreated: campaignResult.wasCreated },
+      adSets: { upsertedCount: adSetsResult.upsertedCount, skippedCount: adSetsResult.skippedCount },
+      ads: { upsertedCount: adsResult.upsertedCount, skippedCount: adsResult.skippedCount },
+      metrics: {
+        adCount: metricsResult.adCount,
+        upsertedCount: metricsResult.upsertedCount,
+        skippedCount: metricsResult.skippedCount,
+      },
     });
 
     return NextResponse.json({
       ok: true,
+      status,
       durationMs,
       campaign: { id: campaignResult.campaign.metaId, wasCreated: campaignResult.wasCreated },
-      adSets: { upsertedCount: adSetsResult.upsertedCount },
-      ads: { upsertedCount: adsResult.upsertedCount },
+      adSets: { upsertedCount: adSetsResult.upsertedCount, skippedCount: adSetsResult.skippedCount },
+      ads: { upsertedCount: adsResult.upsertedCount, skippedCount: adsResult.skippedCount },
       metrics: {
         adCount: metricsResult.adCount,
         upsertedCount: metricsResult.upsertedCount,
@@ -56,9 +178,9 @@ export async function POST(): Promise<NextResponse> {
     const durationMs = Date.now() - startedAt;
     const message = err instanceof Error ? err.message : String(err);
 
-    await logger.error('sync-metrics cron failed', { error: message, durationMs });
+    await logger.error('sync-metrics cron FAILED', { error: message, durationMs, campaignMetaId: targetMetaId });
 
-    const campaign = await findCampaignByMetaId(META_CAMPAIGN_ID).catch(() => null);
+    const campaign = await findCampaignByMetaId(targetMetaId).catch(() => null);
     if (campaign) {
       await createSyncRun({
         campaignId: campaign.id,
@@ -68,6 +190,6 @@ export async function POST(): Promise<NextResponse> {
       }).catch(() => undefined);
     }
 
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    return NextResponse.json({ ok: false, status: 'FAILED', error: message }, { status: 500 });
   }
 }

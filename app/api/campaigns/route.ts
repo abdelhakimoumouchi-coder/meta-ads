@@ -29,14 +29,14 @@ const CreateCampaignSchema = z.object({
     .number()
     .int('dailyBudgetCents must be an integer')
     .min(0, 'dailyBudgetCents must be >= 0')
-    .max(100_000_00, 'dailyBudgetCents exceeds maximum ($1,000,000)')
+    .max(10_000_000, 'dailyBudgetCents exceeds maximum ($100,000/day)')
     .optional()
     .nullable(),
   lifetimeBudgetCents: z
     .number()
     .int('lifetimeBudgetCents must be an integer')
     .min(0, 'lifetimeBudgetCents must be >= 0')
-    .max(100_000_00, 'lifetimeBudgetCents exceeds maximum ($1,000,000)')
+    .max(10_000_000, 'lifetimeBudgetCents exceeds maximum ($100,000)')
     .optional()
     .nullable(),
   startDate: z

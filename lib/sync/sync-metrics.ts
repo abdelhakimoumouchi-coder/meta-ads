@@ -97,13 +97,17 @@ export async function syncMetrics(campaignMetaId?: string): Promise<SyncMetricsR
     );
   }
 
+  // Resolve the ads for this campaign from the DB once, building a metaId→record map.
+  // When META_AD_IDS is used (legacy, no campaignMetaId), filter the map to only those IDs.
+  const campaignAds = await listAdsForCampaign(campaign.id);
+  const adByMetaId = new Map(campaignAds.map((a) => [a.metaId, a]));
+
   // Determine which Meta ad IDs to sync:
-  // When a specific campaignMetaId is provided, resolve ads from the DB for that campaign.
+  // When a specific campaignMetaId is provided, use all ads found for that campaign in the DB.
   // Otherwise fall back to META_AD_IDS env for backward compatibility.
   let adMetaIds: string[];
 
   if (campaignMetaId) {
-    const campaignAds = await listAdsForCampaign(campaign.id);
     adMetaIds = campaignAds.map((a) => a.metaId);
   } else {
     adMetaIds = META_AD_IDS.length > 0 ? META_AD_IDS : [];
@@ -116,10 +120,6 @@ export async function syncMetrics(campaignMetaId?: string): Promise<SyncMetricsR
     );
     return { metricsRows: [], upsertedCount: 0, skippedCount: 0, adCount: 0 };
   }
-
-  // Build a map of metaId → DB ad record to avoid repeated DB lookups.
-  const campaignAds = await listAdsForCampaign(campaign.id);
-  const adByMetaId = new Map(campaignAds.map((a) => [a.metaId, a]));
 
   logger.debug('Syncing metrics for ads', { adMetaIds });
 

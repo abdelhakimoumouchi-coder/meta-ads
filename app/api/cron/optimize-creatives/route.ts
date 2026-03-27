@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { runOptimizer } from '../../../../lib/optimizer/decision-engine';
 import { listCampaigns } from '../../../../lib/db/queries';
 import { META_CAMPAIGN_ID } from '../../../../lib/meta/config';
@@ -6,6 +7,12 @@ import { IS_DRY_RUN } from '../../../../lib/constants/app';
 import { cronLogger as logger } from '../../../../lib/logs/logger';
 
 export const dynamic = 'force-dynamic';
+
+// ─── Validation schema ────────────────────────────────────────────────────────
+
+const OptimizeCreativesBodySchema = z.object({
+  campaignMetaId: z.string().min(1).optional(),
+}).optional();
 
 // ─── Authorization guard ──────────────────────────────────────────────────────
 
@@ -24,16 +31,18 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   await logger.info('optimize-creatives cron started', { dryRun: IS_DRY_RUN });
 
-  // Determine which campaign(s) to optimize.
-  // 1. Accept optional campaignMetaId from request body.
-  // 2. Fall back to META_CAMPAIGN_ID env.
-  // 3. If neither is set, optimize all ACTIVE campaigns in DB.
+  // Parse and validate request body.
   let requestCampaignId: string | null = null;
   try {
-    const body = (await req.json()) as Record<string, unknown>;
-    if (typeof body.campaignMetaId === 'string' && body.campaignMetaId.trim()) {
-      requestCampaignId = body.campaignMetaId.trim();
+    const rawBody = await req.json();
+    const parsed = OptimizeCreativesBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { ok: false, error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+        { status: 400 },
+      );
     }
+    if (parsed.data?.campaignMetaId) requestCampaignId = parsed.data.campaignMetaId;
   } catch {
     // Empty body is fine.
   }

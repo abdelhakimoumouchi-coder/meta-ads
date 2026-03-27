@@ -7,19 +7,18 @@
  * Respects the global META_MUTATION_MODE and an optional per-request dryRun flag.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { findCampaignById } from '../../../../../lib/db/queries';
 import { runOptimizer } from '../../../../../lib/optimizer/decision-engine';
 import { IS_DRY_RUN } from '../../../../../lib/constants/app';
 
 export const dynamic = 'force-dynamic';
 
-type RouteContext = {
-  params: Promise<{ id: string }>;
-};
-
-export async function POST(req: Request, context: RouteContext): Promise<NextResponse> {
-  const { id } = await context.params;
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+): Promise<NextResponse> {
+  const { id } = await params;
 
   const campaign = await findCampaignById(id).catch(() => null);
   if (!campaign) {

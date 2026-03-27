@@ -5,14 +5,6 @@
  * The client code imports these instead of reading process.env directly.
  */
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`[meta/config] Missing required environment variable: ${name}`);
-  }
-  return value;
-}
-
 function envString(name: string, defaultValue: string): string {
   return process.env[name] ?? defaultValue;
 }
@@ -26,10 +18,14 @@ function envArray(name: string): string[] {
 }
 
 // ─── API Credentials ──────────────────────────────────────────────────────────
+//
+// These are NOT validated at module initialisation so that Next.js can build
+// the app without Meta credentials present in the environment.  Validation
+// happens inside the HTTP client at request time (lib/meta/client.ts).
 
-export const META_APP_ID = requireEnv('META_APP_ID');
-export const META_APP_SECRET = requireEnv('META_APP_SECRET');
-export const META_ACCESS_TOKEN = requireEnv('META_ACCESS_TOKEN');
+export const META_APP_ID = envString('META_APP_ID', '');
+export const META_APP_SECRET = envString('META_APP_SECRET', '');
+export const META_ACCESS_TOKEN = envString('META_ACCESS_TOKEN', '');
 
 /** Graph API version, e.g. "v23.0". */
 export const META_API_VERSION = envString('META_API_VERSION', 'v23.0');
@@ -40,7 +36,7 @@ export const META_API_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}
 // ─── Ad Account Identifiers ───────────────────────────────────────────────────
 
 /** Must include the "act_" prefix. */
-export const META_AD_ACCOUNT_ID = requireEnv('META_AD_ACCOUNT_ID');
+export const META_AD_ACCOUNT_ID = envString('META_AD_ACCOUNT_ID', '');
 
 export const META_BUSINESS_ID = envString('META_BUSINESS_ID', '');
 export const META_PAGE_ID = envString('META_PAGE_ID', '');

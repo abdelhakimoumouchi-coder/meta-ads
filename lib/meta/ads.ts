@@ -29,11 +29,14 @@ export async function fetchAd(adId: string): Promise<MetaAdRaw> {
 }
 
 /**
- * Fetch all ads belonging to the configured campaign.
+ * Fetch all ads belonging to a campaign.
+ *
+ * @param campaignMetaId  Override the META_CAMPAIGN_ID env var.
  */
-export async function fetchCampaignAds(): Promise<MetaAdRaw[]> {
+export async function fetchCampaignAds(campaignMetaId?: string): Promise<MetaAdRaw[]> {
+  const id = campaignMetaId ?? META_CAMPAIGN_ID;
   return metaGetAll<MetaAdRaw>(
-    `${META_CAMPAIGN_ID}/ads`,
+    `${id}/ads`,
     { fields: AD_FIELDS, limit: '50' },
   );
 }

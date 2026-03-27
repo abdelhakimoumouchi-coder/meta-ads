@@ -5,7 +5,8 @@
  * PATCH /api/campaigns/[id]/budgets  – update an ad-set's daily budget (dry-run aware)
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import {
   findCampaignById,
   listAdSetsForCampaign,
@@ -16,14 +17,24 @@ import { IS_DRY_RUN } from '../../../../../lib/constants/app';
 
 export const dynamic = 'force-dynamic';
 
-type RouteContext = {
-  params: Promise<{ id: string }>;
-};
+// ─── Validation schema ────────────────────────────────────────────────────────
+
+const PatchBudgetSchema = z.object({
+  adSetMetaId: z.string().min(1, 'adSetMetaId is required'),
+  dailyBudgetCents: z
+    .number()
+    .int('dailyBudgetCents must be an integer')
+    .min(100, 'dailyBudgetCents must be >= 100 (minimum $1.00)'),
+  dryRun: z.boolean().optional(),
+});
 
 // ─── GET /api/campaigns/[id]/budgets ─────────────────────────────────────────
 
-export async function GET(_req: Request, context: RouteContext): Promise<NextResponse> {
-  const { id } = await context.params;
+export async function GET(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+): Promise<NextResponse> {
+  const { id } = await params;
 
   const campaign = await findCampaignById(id).catch(() => null);
   if (!campaign) {
@@ -57,34 +68,35 @@ export async function GET(_req: Request, context: RouteContext): Promise<NextRes
 
 // ─── PATCH /api/campaigns/[id]/budgets ───────────────────────────────────────
 
-export async function PATCH(req: Request, context: RouteContext): Promise<NextResponse> {
-  const { id } = await context.params;
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+): Promise<NextResponse> {
+  const { id } = await params;
 
   const campaign = await findCampaignById(id).catch(() => null);
   if (!campaign) {
     return NextResponse.json({ ok: false, error: 'Campaign not found' }, { status: 404 });
   }
 
-  const body = (await req.json()) as Record<string, unknown>;
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-  const adSetMetaId =
-    typeof body.adSetMetaId === 'string' ? body.adSetMetaId.trim() : '';
-  const dailyBudgetCents =
-    typeof body.dailyBudgetCents === 'number' ? body.dailyBudgetCents : null;
+  const parsed = PatchBudgetSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { ok: false, error: parsed.error.issues[0]?.message ?? 'Invalid request body' },
+      { status: 400 },
+    );
+  }
+
+  const { adSetMetaId, dailyBudgetCents } = parsed.data;
   // Request-level dry-run OR global safe mode — safety wins.
-  const dryRun = body.dryRun === true || IS_DRY_RUN;
-  if (!adSetMetaId) {
-    return NextResponse.json(
-      { ok: false, error: 'adSetMetaId is required' },
-      { status: 400 },
-    );
-  }
-  if (dailyBudgetCents === null || dailyBudgetCents < 100) {
-    return NextResponse.json(
-      { ok: false, error: 'dailyBudgetCents must be a number >= 100 (minimum $1.00)' },
-      { status: 400 },
-    );
-  }
+  const dryRun = parsed.data.dryRun === true || IS_DRY_RUN;
 
   if (dryRun) {
     return NextResponse.json({

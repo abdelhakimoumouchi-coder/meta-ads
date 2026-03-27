@@ -27,13 +27,16 @@ export interface SyncCampaignResult {
 /**
  * Fetch the campaign from Meta and persist it.
  *
+ * @param campaignMetaId  Meta campaign ID to sync.  Falls back to the
+ *                        META_CAMPAIGN_ID environment variable when omitted.
+ *
  * Returns the upserted Prisma Campaign record.
  * Throws on Meta API errors — the caller should catch and log.
  */
-export async function syncCampaign(): Promise<SyncCampaignResult> {
+export async function syncCampaign(campaignMetaId?: string): Promise<SyncCampaignResult> {
   logger.debug('Fetching campaign from Meta API');
 
-  const raw = await fetchCampaign();
+  const raw = await fetchCampaign(campaignMetaId);
 
   // Parse budget fields (Meta returns USD cents as strings).
   const dailyBudgetCents = raw.daily_budget

@@ -24,10 +24,18 @@ const CAMPAIGN_FIELDS = [
 ].join(',');
 
 /**
- * Fetch the single campaign we manage (identified by META_CAMPAIGN_ID).
+ * Fetch the single campaign we manage.
+ *
+ * @param campaignMetaId  Override the META_CAMPAIGN_ID env var.
  */
-export async function fetchCampaign(): Promise<MetaCampaignRaw> {
-  return metaGet<MetaCampaignRaw>(META_CAMPAIGN_ID, {
+export async function fetchCampaign(campaignMetaId?: string): Promise<MetaCampaignRaw> {
+  const id = campaignMetaId ?? META_CAMPAIGN_ID;
+  if (!id) {
+    throw new Error(
+      '[meta/campaigns] campaignMetaId is required — pass it explicitly or set META_CAMPAIGN_ID in env.',
+    );
+  }
+  return metaGet<MetaCampaignRaw>(id, {
     fields: CAMPAIGN_FIELDS,
   });
 }
